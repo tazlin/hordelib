@@ -1,4 +1,4 @@
-﻿diff --git a/comfy/k_diffusion/sampling.py b/comfy/k_diffusion/sampling.py
+diff --git a/comfy/k_diffusion/sampling.py b/comfy/k_diffusion/sampling.py
 index c809d39..9c9f6b8 100644
 --- a/comfy/k_diffusion/sampling.py
 +++ b/comfy/k_diffusion/sampling.py
@@ -328,7 +328,7 @@ index a0d1313..38650be 100644
  
  def load_if_low_vram(model):
 diff --git a/comfy/samplers.py b/comfy/samplers.py
-index 1552722..0ac5903 100644
+index 1552722..15b0dc4 100644
 --- a/comfy/samplers.py
 +++ b/comfy/samplers.py
 @@ -6,6 +6,8 @@ import contextlib
@@ -340,7 +340,54 @@ index 1552722..0ac5903 100644
  
  #The main sampling function shared by all the samplers
  #Returns predicted noise
-@@ -126,6 +128,7 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+@@ -75,8 +77,15 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+             if c1.keys() != c2.keys():
+                 return False
+             if 'c_crossattn' in c1:
+-                if c1['c_crossattn'].shape != c2['c_crossattn'].shape:
+-                    return False
++                s1 = c1['c_crossattn'].shape
++                s2 = c2['c_crossattn'].shape
++                if s1 != s2:
++                    if s1[0] != s2[0] or s1[2] != s2[2]: #these 2 cases should not happen
++                        return False
++
++                    diff = max(s1[1], s2[1]) / min(s1[1], s2[1])
++                    if diff > 8: #arbitrary limit on the padding because it's probably going to impact performance if it's too much
++                        return False
+             if 'c_concat' in c1:
+                 if c1['c_concat'].shape != c2['c_concat'].shape:
+                     return False
+@@ -109,16 +118,25 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+             c_crossattn = []
+             c_concat = []
+             c_adm = []
++            crossattn_max_len = 0
+             for x in c_list:
+                 if 'c_crossattn' in x:
+-                    c_crossattn.append(x['c_crossattn'])
++                    c = x['c_crossattn']
++                    crossattn_max_len = max(crossattn_max_len, c.shape[1])
++                    c_crossattn.append(c)
+                 if 'c_concat' in x:
+                     c_concat.append(x['c_concat'])
+                 if 'c_adm' in x:
+                     c_adm.append(x['c_adm'])
+             out = {}
+-            if len(c_crossattn) > 0:
+-                out['c_crossattn'] = [torch.cat(c_crossattn)]
++            c_crossattn_out = []
++            for c in c_crossattn:
++                if c.shape[1] < crossattn_max_len:
++                    c = torch.nn.functional.pad(c, (0, 0, 0, crossattn_max_len - c.shape[1]))
++                c_crossattn_out.append(c)
++
++            if len(c_crossattn_out) > 0:
++                out['c_crossattn'] = [torch.cat(c_crossattn_out)]
+             if len(c_concat) > 0:
+                 out['c_concat'] = [torch.cat(c_concat)]
+             if len(c_adm) > 0:
+@@ -126,6 +144,7 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
              return out
  
          def calc_cond_uncond_batch(model_function, cond, uncond, x_in, timestep, max_total_area, cond_concat_in, model_options):
@@ -348,7 +395,7 @@ index 1552722..0ac5903 100644
              out_cond = torch.zeros_like(x_in)
              out_count = torch.ones_like(x_in)/100000.0
  
-@@ -136,12 +139,14 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+@@ -136,12 +155,14 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
              UNCOND = 1
  
              to_run = []
@@ -363,7 +410,7 @@ index 1552722..0ac5903 100644
              for x in uncond:
                  p = get_area_and_mult(x, x_in, cond_concat_in, timestep)
                  if p is None:
-@@ -149,6 +154,7 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+@@ -149,6 +170,7 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
  
                  to_run += [(p, UNCOND)]
  
@@ -371,7 +418,7 @@ index 1552722..0ac5903 100644
              while len(to_run) > 0:
                  first = to_run[0]
                  first_shape = first[0][0].shape
-@@ -157,15 +163,18 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+@@ -157,15 +179,18 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
                      if can_concat_cond(to_run[x][0], first[0]):
                          to_batch_temp += [x]
  
@@ -390,7 +437,7 @@ index 1552722..0ac5903 100644
                  input_x = []
                  mult = []
                  c = []
-@@ -201,11 +210,16 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+@@ -201,11 +226,16 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
  
                  c['transformer_options'] = transformer_options
  
@@ -409,15 +456,15 @@ index 1552722..0ac5903 100644
                  for o in range(batch_chunks):
                      if cond_or_uncond[o] == COND:
                          out_cond[:,:,area[o][2]:area[o][0] + area[o][2],area[o][3]:area[o][1] + area[o][3]] += output[o] * mult[o]
-@@ -213,17 +227,24 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+@@ -213,17 +243,24 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
                      else:
                          out_uncond[:,:,area[o][2]:area[o][0] + area[o][2],area[o][3]:area[o][1] + area[o][3]] += output[o] * mult[o]
                          out_uncond_count[:,:,area[o][2]:area[o][0] + area[o][2],area[o][3]:area[o][1] + area[o][3]] += mult[o]
 +                #logger.warning("calc_cond_uncond_batch() 3g")
                  del mult
 +                #logger.warning("calc_cond_uncond_batch() 3h")
-+
  
++
 +            #logger.warning("calc_cond_uncond_batch() 4")
              out_cond /= out_count
              del out_count
@@ -435,7 +482,7 @@ index 1552722..0ac5903 100644
          cond, uncond = calc_cond_uncond_batch(model_function, cond, uncond, x, timestep, max_total_area, cond_concat, model_options)
          if "sampler_cfg_function" in model_options:
              return model_options["sampler_cfg_function"](cond, uncond, cond_scale)
-@@ -458,12 +479,14 @@ class KSampler:
+@@ -458,12 +495,14 @@ class KSampler:
          sigmas = self.sigmas
          sigma_min = self.sigma_min
  
@@ -450,7 +497,7 @@ index 1552722..0ac5903 100644
          if start_step is not None:
              if start_step < (len(sigmas) - 1):
                  sigmas = sigmas[start_step:]
-@@ -473,6 +496,7 @@ class KSampler:
+@@ -473,6 +512,7 @@ class KSampler:
                  else:
                      return torch.zeros_like(noise)
  
@@ -458,7 +505,7 @@ index 1552722..0ac5903 100644
          positive = positive[:]
          negative = negative[:]
          #make sure each cond area has an opposite one with the same area
-@@ -484,11 +508,13 @@ class KSampler:
+@@ -484,11 +524,13 @@ class KSampler:
          apply_empty_x_to_equal_area(positive, negative, 'control', lambda cond_cnets, x: cond_cnets[x])
          apply_empty_x_to_equal_area(positive, negative, 'gligen', lambda cond_cnets, x: cond_cnets[x])
  
@@ -472,7 +519,7 @@ index 1552722..0ac5903 100644
          if hasattr(self.model, 'noise_augmentor'): #unclip
              positive = encode_adm(self.model.noise_augmentor, positive, noise.shape[0], self.device)
              negative = encode_adm(self.model.noise_augmentor, negative, noise.shape[0], self.device)
-@@ -516,7 +542,9 @@ class KSampler:
+@@ -516,7 +558,9 @@ class KSampler:
          else:
              max_denoise = True
  
@@ -482,7 +529,7 @@ index 1552722..0ac5903 100644
              if self.sampler == "uni_pc":
                  samples = uni_pc.sample_unipc(self.model_wrap, noise, latent_image, sigmas, sampling_function=sampling_function, max_denoise=max_denoise, extra_args=extra_args, noise_mask=denoise_mask)
              elif self.sampler == "uni_pc_bh2":
-@@ -532,22 +560,23 @@ class KSampler:
+@@ -532,22 +576,23 @@ class KSampler:
                  sampler.make_schedule_timesteps(ddim_timesteps=timesteps, verbose=False)
                  z_enc = sampler.stochastic_encode(latent_image, torch.tensor([len(timesteps) - 1] * noise.shape[0]).to(self.device), noise=noise, max_denoise=max_denoise)
                  samples, _ = sampler.sample_custom(ddim_timesteps=timesteps,
@@ -520,7 +567,7 @@ index 1552722..0ac5903 100644
                  extra_args["denoise_mask"] = denoise_mask
                  self.model_k.latent_image = latent_image
                  self.model_k.noise = noise
-@@ -557,10 +586,13 @@ class KSampler:
+@@ -557,10 +602,13 @@ class KSampler:
                  if latent_image is not None:
                      noise += latent_image
                  if self.sampler == "dpm_fast":
