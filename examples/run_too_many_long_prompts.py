@@ -14,7 +14,7 @@ from PIL import Image
 import hordelib
 
 
-def main(run_batch_name: str, seed: str, karras: bool, total_images: int):
+def main(run_batch_name: str, seed: str, karras: bool, total_images: int, skip_short: bool):
     print(f"{run_batch_name=} {seed=} {karras=}")
     hordelib.initialise()
 
@@ -80,8 +80,11 @@ def main(run_batch_name: str, seed: str, karras: bool, total_images: int):
         if target_filepath.exists():
             print(f"Skipping {diffusion_db_id} because it already exists.")
             return False
-        if tokens_count <= 77:
-            print(f"{diffusion_db_id} has less than 78 tokens.")
+        if tokens_count <= 82:
+            print(f"{diffusion_db_id} has less than 82 tokens.")
+            if skip_short:
+                return False
+
         data = {
             "sampler_name": SAMPLERS_LOOKUP[df_row["sampler"]],
             "cfg_scale": df_row["cfg"],
@@ -168,5 +171,12 @@ if __name__ == "__main__":
         help="The seed to use for all generations this run.",
     )
     argParsers.add_argument("--karras", action="store_true")
+    argParsers.add_argument("--skip_short", action="store_true")
     args = argParsers.parse_args()
-    main(run_batch_name=args.run_batch_name, seed=args.seed, karras=args.karras, total_images=args.total_images)
+    main(
+        run_batch_name=args.run_batch_name,
+        seed=args.seed,
+        karras=args.karras,
+        total_images=args.total_images,
+        skip_short=args.skip_short,
+    )
