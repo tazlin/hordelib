@@ -49,7 +49,7 @@ index c809d39..9c9f6b8 100644
 +    # logger.warning(f"Done DPM-Solver++(2M) on model {id(model):x}")
      return x
 diff --git a/comfy/model_management.py b/comfy/model_management.py
-index a0d1313..38650be 100644
+index a0d1313..d954825 100644
 --- a/comfy/model_management.py
 +++ b/comfy/model_management.py
 @@ -1,6 +1,9 @@
@@ -196,19 +196,19 @@ index a0d1313..38650be 100644
 -    global vram_state
 -    if vram_state == VRAMState.CPU:
 -        return
+-
+-    if vram_state == VRAMState.LOW_VRAM or vram_state == VRAMState.NO_VRAM:
+-        #don't load controlnets like this if low vram because they will be loaded right before running and unloaded right after
+-        return
 +            if model in self.models_accelerated:
 +                accelerate.hooks.remove_hook_from_submodules(model.model)
 +                self.models_accelerated.remove(model)
  
--    if vram_state == VRAMState.LOW_VRAM or vram_state == VRAMState.NO_VRAM:
--        #don't load controlnets like this if low vram because they will be loaded right before running and unloaded right after
--        return
-+            self.current_loaded_models.remove(model)
- 
 -    models = []
 -    for m in control_models:
 -        models += m.get_models()
--
++            self.current_loaded_models.remove(model)
+ 
 -    for m in current_gpu_controlnets:
 -        if m not in models:
 -            m.cpu()
@@ -327,8 +327,40 @@ index a0d1313..38650be 100644
  
  
  def load_if_low_vram(model):
+@@ -244,8 +330,17 @@ def xformers_enabled_vae():
+     return XFORMERS_ENABLED_VAE
+ 
+ def pytorch_attention_enabled():
++    global ENABLE_PYTORCH_ATTENTION
+     return ENABLE_PYTORCH_ATTENTION
+ 
++def pytorch_attention_flash_attention():
++    global ENABLE_PYTORCH_ATTENTION
++    if ENABLE_PYTORCH_ATTENTION:
++        #TODO: more reliable way of checking for flash attention?
++        if torch.version.cuda: #pytorch flash attention only works on Nvidia
++            return True
++    return False
++
+ def get_free_memory(dev=None, torch_free_too=False):
+     global xpu_available
+     if dev is None:
+@@ -277,7 +372,12 @@ def maximum_batch_area():
+         return 0
+ 
+     memory_free = get_free_memory() / (1024 * 1024)
+-    area = ((memory_free - 1024) * 0.9) / (0.6)
++    if xformers_enabled() or pytorch_attention_flash_attention():
++        #TODO: this needs to be tweaked
++        area = 20 * memory_free
++    else:
++        #TODO: this formula is because AMD sucks and has memory management issues which might be fixed in the future
++        area = ((memory_free - 1024) * 0.9) / (0.6)
+     return int(max(area, 0))
+ 
+ def cpu_mode():
 diff --git a/comfy/samplers.py b/comfy/samplers.py
-index 1552722..15b0dc4 100644
+index 1552722..0ac5903 100644
 --- a/comfy/samplers.py
 +++ b/comfy/samplers.py
 @@ -6,6 +6,8 @@ import contextlib
@@ -340,54 +372,7 @@ index 1552722..15b0dc4 100644
  
  #The main sampling function shared by all the samplers
  #Returns predicted noise
-@@ -75,8 +77,15 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
-             if c1.keys() != c2.keys():
-                 return False
-             if 'c_crossattn' in c1:
--                if c1['c_crossattn'].shape != c2['c_crossattn'].shape:
--                    return False
-+                s1 = c1['c_crossattn'].shape
-+                s2 = c2['c_crossattn'].shape
-+                if s1 != s2:
-+                    if s1[0] != s2[0] or s1[2] != s2[2]: #these 2 cases should not happen
-+                        return False
-+
-+                    diff = max(s1[1], s2[1]) / min(s1[1], s2[1])
-+                    if diff > 8: #arbitrary limit on the padding because it's probably going to impact performance if it's too much
-+                        return False
-             if 'c_concat' in c1:
-                 if c1['c_concat'].shape != c2['c_concat'].shape:
-                     return False
-@@ -109,16 +118,25 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
-             c_crossattn = []
-             c_concat = []
-             c_adm = []
-+            crossattn_max_len = 0
-             for x in c_list:
-                 if 'c_crossattn' in x:
--                    c_crossattn.append(x['c_crossattn'])
-+                    c = x['c_crossattn']
-+                    crossattn_max_len = max(crossattn_max_len, c.shape[1])
-+                    c_crossattn.append(c)
-                 if 'c_concat' in x:
-                     c_concat.append(x['c_concat'])
-                 if 'c_adm' in x:
-                     c_adm.append(x['c_adm'])
-             out = {}
--            if len(c_crossattn) > 0:
--                out['c_crossattn'] = [torch.cat(c_crossattn)]
-+            c_crossattn_out = []
-+            for c in c_crossattn:
-+                if c.shape[1] < crossattn_max_len:
-+                    c = torch.nn.functional.pad(c, (0, 0, 0, crossattn_max_len - c.shape[1]))
-+                c_crossattn_out.append(c)
-+
-+            if len(c_crossattn_out) > 0:
-+                out['c_crossattn'] = [torch.cat(c_crossattn_out)]
-             if len(c_concat) > 0:
-                 out['c_concat'] = [torch.cat(c_concat)]
-             if len(c_adm) > 0:
-@@ -126,6 +144,7 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+@@ -126,6 +128,7 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
              return out
  
          def calc_cond_uncond_batch(model_function, cond, uncond, x_in, timestep, max_total_area, cond_concat_in, model_options):
@@ -395,7 +380,7 @@ index 1552722..15b0dc4 100644
              out_cond = torch.zeros_like(x_in)
              out_count = torch.ones_like(x_in)/100000.0
  
-@@ -136,12 +155,14 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+@@ -136,12 +139,14 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
              UNCOND = 1
  
              to_run = []
@@ -410,7 +395,7 @@ index 1552722..15b0dc4 100644
              for x in uncond:
                  p = get_area_and_mult(x, x_in, cond_concat_in, timestep)
                  if p is None:
-@@ -149,6 +170,7 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+@@ -149,6 +154,7 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
  
                  to_run += [(p, UNCOND)]
  
@@ -418,7 +403,7 @@ index 1552722..15b0dc4 100644
              while len(to_run) > 0:
                  first = to_run[0]
                  first_shape = first[0][0].shape
-@@ -157,15 +179,18 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+@@ -157,15 +163,18 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
                      if can_concat_cond(to_run[x][0], first[0]):
                          to_batch_temp += [x]
  
@@ -437,7 +422,7 @@ index 1552722..15b0dc4 100644
                  input_x = []
                  mult = []
                  c = []
-@@ -201,11 +226,16 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+@@ -201,11 +210,16 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
  
                  c['transformer_options'] = transformer_options
  
@@ -456,15 +441,15 @@ index 1552722..15b0dc4 100644
                  for o in range(batch_chunks):
                      if cond_or_uncond[o] == COND:
                          out_cond[:,:,area[o][2]:area[o][0] + area[o][2],area[o][3]:area[o][1] + area[o][3]] += output[o] * mult[o]
-@@ -213,17 +243,24 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
+@@ -213,17 +227,24 @@ def sampling_function(model_function, x, timestep, uncond, cond, cond_scale, con
                      else:
                          out_uncond[:,:,area[o][2]:area[o][0] + area[o][2],area[o][3]:area[o][1] + area[o][3]] += output[o] * mult[o]
                          out_uncond_count[:,:,area[o][2]:area[o][0] + area[o][2],area[o][3]:area[o][1] + area[o][3]] += mult[o]
 +                #logger.warning("calc_cond_uncond_batch() 3g")
                  del mult
 +                #logger.warning("calc_cond_uncond_batch() 3h")
- 
 +
+ 
 +            #logger.warning("calc_cond_uncond_batch() 4")
              out_cond /= out_count
              del out_count
@@ -482,7 +467,7 @@ index 1552722..15b0dc4 100644
          cond, uncond = calc_cond_uncond_batch(model_function, cond, uncond, x, timestep, max_total_area, cond_concat, model_options)
          if "sampler_cfg_function" in model_options:
              return model_options["sampler_cfg_function"](cond, uncond, cond_scale)
-@@ -458,12 +495,14 @@ class KSampler:
+@@ -458,12 +479,14 @@ class KSampler:
          sigmas = self.sigmas
          sigma_min = self.sigma_min
  
@@ -497,7 +482,7 @@ index 1552722..15b0dc4 100644
          if start_step is not None:
              if start_step < (len(sigmas) - 1):
                  sigmas = sigmas[start_step:]
-@@ -473,6 +512,7 @@ class KSampler:
+@@ -473,6 +496,7 @@ class KSampler:
                  else:
                      return torch.zeros_like(noise)
  
@@ -505,7 +490,7 @@ index 1552722..15b0dc4 100644
          positive = positive[:]
          negative = negative[:]
          #make sure each cond area has an opposite one with the same area
-@@ -484,11 +524,13 @@ class KSampler:
+@@ -484,11 +508,13 @@ class KSampler:
          apply_empty_x_to_equal_area(positive, negative, 'control', lambda cond_cnets, x: cond_cnets[x])
          apply_empty_x_to_equal_area(positive, negative, 'gligen', lambda cond_cnets, x: cond_cnets[x])
  
@@ -519,7 +504,7 @@ index 1552722..15b0dc4 100644
          if hasattr(self.model, 'noise_augmentor'): #unclip
              positive = encode_adm(self.model.noise_augmentor, positive, noise.shape[0], self.device)
              negative = encode_adm(self.model.noise_augmentor, negative, noise.shape[0], self.device)
-@@ -516,7 +558,9 @@ class KSampler:
+@@ -516,7 +542,9 @@ class KSampler:
          else:
              max_denoise = True
  
@@ -529,7 +514,7 @@ index 1552722..15b0dc4 100644
              if self.sampler == "uni_pc":
                  samples = uni_pc.sample_unipc(self.model_wrap, noise, latent_image, sigmas, sampling_function=sampling_function, max_denoise=max_denoise, extra_args=extra_args, noise_mask=denoise_mask)
              elif self.sampler == "uni_pc_bh2":
-@@ -532,22 +576,23 @@ class KSampler:
+@@ -532,22 +560,23 @@ class KSampler:
                  sampler.make_schedule_timesteps(ddim_timesteps=timesteps, verbose=False)
                  z_enc = sampler.stochastic_encode(latent_image, torch.tensor([len(timesteps) - 1] * noise.shape[0]).to(self.device), noise=noise, max_denoise=max_denoise)
                  samples, _ = sampler.sample_custom(ddim_timesteps=timesteps,
@@ -567,7 +552,7 @@ index 1552722..15b0dc4 100644
                  extra_args["denoise_mask"] = denoise_mask
                  self.model_k.latent_image = latent_image
                  self.model_k.noise = noise
-@@ -557,10 +602,13 @@ class KSampler:
+@@ -557,10 +586,13 @@ class KSampler:
                  if latent_image is not None:
                      noise += latent_image
                  if self.sampler == "dpm_fast":
@@ -843,7 +828,7 @@ index 02c700e..507d1db 100644
  
  def prompt_worker(q, server):
 diff --git a/nodes.py b/nodes.py
-index 48c3ee9..5fe17c1 100644
+index 48c3ee9..b3ee84c 100644
 --- a/nodes.py
 +++ b/nodes.py
 @@ -26,6 +26,11 @@ import importlib
@@ -858,7 +843,24 @@ index 48c3ee9..5fe17c1 100644
  def before_node_execution():
      comfy.model_management.throw_exception_if_processing_interrupted()
  
-@@ -739,7 +744,6 @@ class SetLatentNoiseMask:
+@@ -73,14 +78,13 @@ class ConditioningSetArea:
+ 
+     CATEGORY = "conditioning"
+ 
+-    def append(self, conditioning, width, height, x, y, strength, min_sigma=0.0, max_sigma=99.0):
++    def append(self, conditioning, width, height, x, y, strength):
+         c = []
+         for t in conditioning:
+             n = [t[0], t[1].copy()]
+             n[1]['area'] = (height // 8, width // 8, y // 8, x // 8)
+             n[1]['strength'] = strength
+-            n[1]['min_sigma'] = min_sigma
+-            n[1]['max_sigma'] = max_sigma
++            n[1]['set_area_to_bounds'] = False
+             c.append(n)
+         return (c, )
+ 
+@@ -739,7 +743,6 @@ class SetLatentNoiseMask:
          s["noise_mask"] = mask
          return (s,)
  
@@ -866,7 +868,7 @@ index 48c3ee9..5fe17c1 100644
  def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise=1.0, disable_noise=False, start_step=None, last_step=None, force_full_denoise=False):
      latent_image = latent["samples"]
      noise_mask = None
-@@ -765,55 +769,74 @@ def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive,
+@@ -765,55 +768,74 @@ def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive,
          noise_mask = torch.cat([noise_mask] * noise.shape[0])
          noise_mask = noise_mask.to(device)
  
@@ -990,7 +992,7 @@ index 48c3ee9..5fe17c1 100644
      return (out, )
  
  class KSampler:
-@@ -976,6 +999,7 @@ class LoadImage:
+@@ -976,6 +998,7 @@ class LoadImage:
      def load_image(self, image):
          input_dir = folder_paths.get_input_directory()
          image_path = os.path.join(input_dir, image)
