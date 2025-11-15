@@ -158,7 +158,7 @@ def example_3_building_pipeline_from_scratch():
     pipeline = builder.build()
 
     print(f"Built pipeline with {len(pipeline.nodes)} nodes")
-    print(f"Node titles: {[n._meta.title for n in pipeline.nodes.values()]}\n")
+    print(f"Node titles: {[n.meta.title for n in pipeline.nodes.values()]}\n")
 
     # Export to ComfyUI format
     comfy_format = builder.to_comfy_format()

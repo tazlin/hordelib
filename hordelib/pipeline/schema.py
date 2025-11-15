@@ -78,12 +78,15 @@ class ComfyNode(BaseModel):
     Each node has:
     - inputs: Parameters and connections to other nodes
     - class_type: The ComfyUI node class name
-    - _meta: Metadata including the human-readable title
+    - meta: Metadata including the human-readable title (serialized as _meta)
     """
 
     inputs: dict[str, Any] = Field(default_factory=dict, description="Node input parameters")
     class_type: str = Field(..., description="ComfyUI node class name")
-    _meta: NodeMeta = Field(..., description="Node metadata")
+    meta: NodeMeta = Field(..., alias="_meta", description="Node metadata")
+
+    class Config:
+        populate_by_name = True  # Allow both 'meta' and '_meta' when parsing
 
     @field_validator("inputs", mode="before")
     @classmethod
@@ -145,7 +148,7 @@ class Pipeline(BaseModel):
     def get_node_by_title(self, title: str) -> ComfyNode | None:
         """Get a node by its metadata title."""
         for node in self.nodes.values():
-            if node._meta.title == title:
+            if node.meta.title == title:
                 return node
         return None
 
@@ -165,7 +168,7 @@ class Pipeline(BaseModel):
             node_data = {
                 "inputs": {},
                 "class_type": node.class_type,
-                "_meta": {"title": node._meta.title},
+                "_meta": {"title": node.meta.title},
             }
 
             # Convert inputs, handling NodeConnection objects
@@ -494,3 +497,8 @@ def get_comfy_sampler_name(sampler: SamplerName | str) -> str:
             return "euler"
 
     return SAMPLER_MAP.get(sampler, "euler")
+
+
+# Rebuild models to ensure forward references are resolved
+ComfyNode.model_rebuild()
+Pipeline.model_rebuild()

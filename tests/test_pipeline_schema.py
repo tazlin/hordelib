@@ -55,10 +55,10 @@ class TestComfyNode:
         node = ComfyNode(
             inputs={"seed": 42, "steps": 20},
             class_type="KSampler",
-            _meta=NodeMeta(title="sampler"),
+            meta=NodeMeta(title="sampler"),
         )
         assert node.class_type == "KSampler"
-        assert node._meta.title == "sampler"
+        assert node.meta.title == "sampler"
         assert node.get_input_value("seed") == 42
 
     def test_set_input_value(self):
@@ -66,7 +66,7 @@ class TestComfyNode:
         node = ComfyNode(
             inputs={},
             class_type="KSampler",
-            _meta=NodeMeta(title="sampler"),
+            meta=NodeMeta(title="sampler"),
         )
         node.set_input_value("cfg", 7.5)
         assert node.get_input_value("cfg") == 7.5
@@ -76,7 +76,7 @@ class TestComfyNode:
         node = ComfyNode(
             inputs={},
             class_type="KSampler",
-            _meta=NodeMeta(title="sampler"),
+            meta=NodeMeta(title="sampler"),
         )
         node.connect_input("model", "4", 0)
         conn = node.get_connection("model")
@@ -92,7 +92,7 @@ class TestComfyNode:
                 "cfg": 7.5,  # Regular value
             },
             class_type="KSampler",
-            _meta=NodeMeta(title="sampler"),
+            meta=NodeMeta(title="sampler"),
         )
         conn = node.get_connection("model")
         assert conn is not None
@@ -114,7 +114,7 @@ class TestPipeline:
         node = ComfyNode(
             inputs={},
             class_type="KSampler",
-            _meta=NodeMeta(title="sampler"),
+            meta=NodeMeta(title="sampler"),
         )
         pipeline.add_node("3", node)
         assert len(pipeline.nodes) == 1
@@ -126,7 +126,7 @@ class TestPipeline:
         node = ComfyNode(
             inputs={},
             class_type="KSampler",
-            _meta=NodeMeta(title="my_sampler"),
+            meta=NodeMeta(title="my_sampler"),
         )
         pipeline.add_node("3", node)
         found = pipeline.get_node_by_title("my_sampler")
@@ -138,7 +138,7 @@ class TestPipeline:
         node = ComfyNode(
             inputs={},
             class_type="KSampler",
-            _meta=NodeMeta(title="sampler"),
+            meta=NodeMeta(title="sampler"),
         )
         pipeline.add_node("3", node)
         pipeline.remove_node("3")
@@ -150,7 +150,7 @@ class TestPipeline:
         node = ComfyNode(
             inputs={"seed": 42, "model": NodeConnection(node_id="4", output_index=0)},
             class_type="KSampler",
-            _meta=NodeMeta(title="sampler"),
+            meta=NodeMeta(title="sampler"),
         )
         pipeline.add_node("3", node)
 

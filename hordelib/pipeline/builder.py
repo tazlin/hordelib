@@ -105,7 +105,7 @@ class PipelineBuilder:
         node = ComfyNode(
             inputs=inputs or {},
             class_type=class_type,
-            _meta=NodeMeta(title=title),
+            meta=NodeMeta(title=title),
         )
 
         self.pipeline.add_node(node_id, node)
@@ -460,20 +460,35 @@ class PipelineBuilder:
         """Set multiple inputs using dot notation (compatible with old _set() method).
 
         Args:
-            **kwargs: Key-value pairs where keys are in "node_title.input_name" format
+            **kwargs: Key-value pairs where keys use double underscore as separator.
+                     Format: "node_title__input_name" (e.g., sampler__cfg=8.0)
+                     You can also pass a dict with dot notation keys using **dict syntax.
 
         Example:
+            >>> # Using double underscore (recommended for kwargs)
             >>> builder.set_inputs_by_dot_notation(
             ...     sampler__cfg=8.0,
             ...     sampler__steps=20,
             ...     prompt__text="a beautiful landscape"
             ... )
+            >>> # Using dict unpacking (for keys with dots)
+            >>> builder.set_inputs_by_dot_notation(**{
+            ...     "sampler.cfg": 8.0,
+            ...     "sampler.steps": 20
+            ... })
         """
         for key, value in kwargs.items():
-            # Split on '.' to get node title and input name
-            parts = key.split(".", 1)
+            # Try splitting on both '__' and '.' for flexibility
+            if "__" in key:
+                parts = key.split("__", 1)
+            elif "." in key:
+                parts = key.split(".", 1)
+            else:
+                logger.warning(f"Invalid notation key (use '__' or '.'): {key}")
+                continue
+
             if len(parts) != 2:
-                logger.warning(f"Invalid dot notation key: {key}")
+                logger.warning(f"Invalid notation key: {key}")
                 continue
 
             node_title, input_name = parts
